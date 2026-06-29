@@ -430,10 +430,23 @@ def complete_scrape_run(engine: Engine, schema: str, run_id: str, status: str, v
         )
 
 
-def get_existing_comment_ids(engine: Engine, schema: str) -> set:
+def get_existing_comment_ids(engine: Engine, schema: str, project_id: Optional[str] = None) -> set:
     try:
         ensure_database_ready(engine, schema)
-        df = pd.read_sql_query(f'SELECT comment_id FROM {qualified(schema, "comments")}', engine)
+
+        if project_id:
+            df = pd.read_sql_query(
+                text(f"""
+                    SELECT pc.comment_id
+                    FROM {qualified(schema, "project_comments")} pc
+                    WHERE pc.project_id = :project_id
+                """),
+                engine,
+                params={"project_id": project_id},
+            )
+        else:
+            return set()
+
         return set(df["comment_id"].astype(str).fillna("").tolist())
     except Exception:
         return set()
@@ -1588,8 +1601,18 @@ if run_search:
         "save_transcripts": save_transcripts and platform == PLATFORM_YOUTUBE,
     }
 
-    existing_comment_ids = get_existing_comment_ids(conn, schema)
-    st.info(f"Found {len(existing_comment_ids)} existing comments in the database. Duplicates will be skipped.")
+    project_id_for_dedupe, _ = get_or_create_project(
+        conn,
+        schema,
+        params["project_name"],
+        params["user_name"],
+    )
+
+    existing_comment_ids = get_existing_comment_ids(
+        conn,
+        schema,
+        project_id=project_id_for_dedupe,
+    )
 
     recently_scraped_ids = get_recently_scraped_video_ids(conn, schema, days=7) if skip_recently_scraped else set()
     if recently_scraped_ids:
