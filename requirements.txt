@@ -1,6 +1,7 @@
 streamlit>=1.35.0
-sqlalchemy>=2.0.0
-psycopg2-binary>=2.9.9
+sqlalchemy>=2.0.0,<3.0
+# Psycopg 2.9.11 added Python 3.14 support.
+psycopg2-binary>=2.9.11,<3.0
 google-api-python-client>=2.130.0
 youtube-transcript-api>=0.6.2
 pandas>=2.0.0
