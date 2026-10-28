@@ -26,7 +26,7 @@ import streamlit as st
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 
 try:
     from psycopg2.extras import execute_values
@@ -170,7 +170,13 @@ def get_db_schema() -> str:
 
 def get_db_engine() -> Engine:
     database_url = st.secrets.get("DATABASE_URL", "sqlite:///scraper_local.db")
-    return create_engine(database_url, pool_pre_ping=True)
+    url = make_url(database_url)
+    # SQLAlchemy 2.1 changed the default for postgresql:// to psycopg (v3).
+    # This app installs psycopg2-binary and uses psycopg2.extras.execute_values,
+    # so select psycopg2 explicitly, preserving credentials and query options.
+    if url.drivername.split("+", 1)[0] in {"postgres", "postgresql"}:
+        url = url.set(drivername="postgresql+psycopg2")
+    return create_engine(url, pool_pre_ping=True)
 
 
 def qualified(schema: str, table_name: str) -> str:
@@ -518,7 +524,11 @@ def bulk_insert_rows(
         ON CONFLICT ({conflict_sql}) {conflict_action}
     """
 
-    if conn.engine.dialect.name == "postgresql" and PSYCOPG2_EXECUTE_VALUES_AVAILABLE:
+    if (
+        conn.engine.dialect.name == "postgresql"
+        and conn.engine.dialect.driver == "psycopg2"
+        and PSYCOPG2_EXECUTE_VALUES_AVAILABLE
+    ):
         raw = _get_driver_connection(conn)
         with raw.cursor() as cur:
             execute_values(cur, sql, values, page_size=page_size)
@@ -526,7 +536,7 @@ def bulk_insert_rows(
 
     val_sql = ", ".join(f":{c}" for c in columns)
     fallback_sql = text(f"""
-        INSERT INTO "{schema}"."{table_name}" ({col_sql})
+        INSERT INTO {table_sql} AS t ({col_sql})
         VALUES ({val_sql})
         ON CONFLICT ({conflict_sql}) {conflict_action}
     """)
