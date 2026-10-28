@@ -54,8 +54,7 @@ content-scraper/
 ├── README.md                      # Project documentation
 ├── LICENSE                        # MIT license
 ├── secrets.toml.example           # Example Streamlit secrets file
-└── sql/
-    └── neon_social_scraper_schema.sql   # Optional database schema setup
+└── requirements_tiktok_local.txt   # Optional local TikTok dependencies
 ```
 
 ---
@@ -67,7 +66,9 @@ content-scraper/
 ```bash
 git clone https://github.com/YOUR_USERNAME/portfolio-youtube-tiktok-scraper.git
 cd portfolio-youtube-tiktok-scraper
-pip install -r requirements.txt
+python -m venv .venv
+# Activate .venv for your operating system, then:
+python -m pip install -r requirements.txt
 ```
 
 ### 2. Create a Neon PostgreSQL database
@@ -88,11 +89,9 @@ Do not commit `.streamlit/secrets.toml` to GitHub.
 
 ### 3. Create the database schema
 
-Run the PostgreSQL schema file in Neon SQL Editor or through a local SQL client:
-
-```bash
-psql "$DATABASE_URL" -f sql/neon_social_scraper_schema.sql
-```
+The app creates or patches its tables automatically before scraping, saving, or
+exporting. No separate SQL file is required. The database role must be allowed to
+create the schema, tables, and `pgcrypto` extension.
 
 ### 4. Create a YouTube Data API key
 
@@ -105,17 +104,68 @@ psql "$DATABASE_URL" -f sql/neon_social_scraper_schema.sql
 
 ## Streamlit Cloud Deployment
 
-Use this `requirements.txt` for Streamlit Cloud:
+Use the included `requirements.txt` at the repository root, next to `app.py`.
+It includes the Excel export and optional Reddit dependencies as well as the
+core YouTube and database packages.
 
-```txt
-streamlit>=1.35.0
-sqlalchemy>=2.0.0
-psycopg2-binary>=2.9.9
-google-api-python-client>=2.130.0
-youtube-transcript-api>=0.6.2
-pandas>=2.0.0
-tenacity>=8.2.0
+Set the Streamlit entrypoint to `app.py` and add your real credentials in the
+app's private Secrets settings. For local use, copy `secrets.toml.example` to
+`.streamlit/secrets.toml`, fill in your credentials, and run:
+
+```bash
+streamlit run app.py
 ```
+
+PostgreSQL is required for scraping, project saving, and exports. The existing
+SQLite engine fallback is not a complete offline database implementation.
+
+### Fix for `ModuleNotFoundError: No module named 'psycopg'`
+
+The application uses Psycopg 2 (`psycopg2-binary`), including its fast bulk-insert
+helper. SQLAlchemy 2.1 changed the default driver for a plain `postgresql://` URL
+from Psycopg 2 to Psycopg 3 (`psycopg`). An unbounded dependency upgrade can
+therefore cause an app that previously worked to request an uninstalled driver.
+An explicit `postgresql+psycopg://` URL also requests Psycopg 3.
+
+The corrected `get_db_engine()` selects `postgresql+psycopg2` explicitly for
+PostgreSQL URLs and preserves the password, host, database, and query options.
+The example secrets file now uses the same explicit driver. The requirements
+also set Psycopg 2.9.11 as the minimum because it added Python 3.14 support.
+
+To apply the fix to an existing Streamlit Cloud app:
+
+1. Replace `app.py` and `requirements.txt` in the GitHub repository and branch
+   used by the deployed app, then commit the changes.
+2. In Streamlit's private Secrets settings, change only the URL prefix to
+   `postgresql+psycopg2://` if it is currently `postgresql://` or
+   `postgresql+psycopg://`. Keep all real connection details and query options.
+   The corrected app also normalizes these prefixes automatically.
+3. Wait for Streamlit to rebuild the dependencies. If the old error remains,
+   use **Manage app → overflow menu → Reboot app** and inspect the build logs.
+4. Confirm the interface loads, then try a small YouTube run with 50 search
+   candidates, a 50-comment limit per video, and a 500-comment target. Save the
+   metadata and check an export. A transcript download can be tested separately.
+
+Changing the example secrets file in GitHub does not update the deployed app's
+private secrets. Never replace real credentials with the example placeholders.
+This fix does not require deleting the app, changing Python versions, or
+resetting the Neon database. Dependency ranges are still flexible; freeze a
+known-working environment after validating the deployed app for repeatable builds.
+
+Validation performed for this fix: on Python 3.12, the original app reproduced
+`No module named 'psycopg'` with SQLAlchemy 2.1.6; the corrected app rendered its
+interface without exceptions using Streamlit 1.66.1 and psycopg2-binary 2.9.13.
+Four PostgreSQL URL forms were checked for driver loading and preservation of
+encoded passwords and TLS query options. These were startup tests with dummy
+credentials; live Neon access, YouTube collection, saving, and exports still
+require a deployment test with your own credentials. Python 3.14 runtime behavior
+was not tested here.
+
+References:
+
+- [SQLAlchemy 2.1 PostgreSQL driver change](https://docs.sqlalchemy.org/en/21/changelog/migration_21.html#default-postgresql-driver-changed-to-psycopg-psycopg-3)
+- [Psycopg release notes](https://www.psycopg.org/docs/news.html)
+- [Streamlit app updates and dependencies](https://docs.streamlit.io/deploy/streamlit-community-cloud/manage-your-app)
 
 Do not include `streamlit-gsheets-connection` in the deployed requirements. The app now uses PostgreSQL.
 
@@ -166,7 +216,9 @@ Approximate quota costs:
 | Comment page | 1 unit per up to 100 comments |
 | Channel metadata | 1 unit per channel |
 
-A 1,500-comment test run may use roughly 50-100 units depending on the number of videos and channels processed.
+Budget for search requests as well as comment pages, metadata, and channels.
+Even one search request uses 100 units in this app's tracker, so a run that searches
+for videos and then fetches 1,500 comments should not be budgeted at 50-100 units.
 
 ---
 
@@ -174,11 +226,10 @@ A 1,500-comment test run may use roughly 50-100 units depending on the number of
 
 TikTok scraping is browser-automation based and may not run reliably on Streamlit Cloud. Keep TikTok integrated in the interface for a unified workflow, but run TikTok collection locally or on a backend that supports browser automation.
 
-Suggested optional local requirements:
+Install the optional local requirements (they include the base requirements):
 
-```txt
-pyktok>=0.2.0
-selenium>=4.15.0
+```bash
+python -m pip install -r requirements_tiktok_local.txt
 ```
 
 ---
@@ -187,6 +238,7 @@ selenium>=4.15.0
 
 | Problem | Likely cause | Fix |
 |---|---|---|
+| `No module named 'psycopg'` | SQLAlchemy selected Psycopg 3, while the app installs Psycopg 2 | Use the corrected `app.py`, the included requirements, and `postgresql+psycopg2://`. |
 | Dependency install fails | Old Google Sheets package still in requirements | Remove `streamlit-gsheets-connection`. |
 | Database connection fails | Invalid `DATABASE_URL` or expired Neon password | Re-copy the pooled Neon connection string and confirm `sslmode=require`. |
 | No videos matched filters | Filters are too narrow | Remove filters one by one and increase scan pool size. |
